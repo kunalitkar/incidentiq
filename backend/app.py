@@ -204,22 +204,27 @@ def _fmt(level: str, template: str) -> str:
 
 def build_scenario_logs(scenario: str, count: int = 35) -> list[str]:
     """
-    Build a log batch biased toward a specific failure scenario.
-    scenario: 'db' | 'latency' | 'auth' | 'mixed'
-    Falls back to mixed if unknown.
+    Build a staged log batch showing system escalation:
+      Stage 1 (first ~40%): INFO only — normal operation
+      Stage 2 (next ~30%):  WARN — degradation begins
+      Stage 3 (last ~30%):  ERROR — failure state
+    This makes the timeline escalation visible in the log stream.
     """
     tmpl = _SCENARIOS.get(scenario, _SCENARIOS["mixed"])
     logs = []
 
-    # ~45% INFO, ~30% WARN, ~25% ERROR for scenario logs
-    for _ in range(count):
-        r = random.random()
-        if r < 0.45:
-            logs.append(_fmt("info", random.choice(_BASE_INFO)))
-        elif r < 0.75:
-            logs.append(_fmt("warn", random.choice(tmpl["warn"])))
-        else:
-            logs.append(_fmt("error", random.choice(tmpl["error"])))
+    stage1 = int(count * 0.40)
+    stage2 = int(count * 0.30)
+    stage3 = count - stage1 - stage2
+
+    for _ in range(stage1):
+        logs.append(_fmt("info", random.choice(_BASE_INFO)))
+
+    for _ in range(stage2):
+        logs.append(_fmt("warn", random.choice(tmpl["warn"])))
+
+    for _ in range(stage3):
+        logs.append(_fmt("error", random.choice(tmpl["error"])))
 
     return logs
 
@@ -313,6 +318,33 @@ def apply_fix():
         "[INFO] All systems operational — incident resolved ✓",
     ]
     return jsonify({"fix_logs": steps, "status": "resolved"})
+
+
+@app.route("/healthy", methods=["GET"])
+def healthy_logs():
+    """
+    GET /healthy — returns a batch of pure healthy INFO logs.
+    Used by the frontend to replace failure logs after Apply Fix.
+    """
+    templates = [
+        "Health check passed — all services nominal",
+        "Request completed in {ms}ms — GET /api/dashboard",
+        "Cache hit ratio 98% — key=session:{uid}",
+        "User authenticated — user_id={uid} session started",
+        "Background worker completed — queue depth: 0",
+        "DB connection pool healthy — 12/25 connections active",
+        "Memory usage stable at 42% — well within limits",
+        "Response time 45ms — P99 within SLA threshold",
+        "Deployment health check passed — all replicas ready",
+        "Scheduled job completed successfully — duration: 1.2s",
+        "API gateway latency 28ms — nominal",
+        "Config sync completed — no drift detected",
+    ]
+    logs = []
+    for _ in range(30):
+        tmpl = random.choice(templates)
+        logs.append(_fmt("info", tmpl))
+    return jsonify({"logs": logs})
 
 
 if __name__ == "__main__":
