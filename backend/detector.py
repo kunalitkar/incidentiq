@@ -18,31 +18,34 @@ RULES = [
         "id": "db_failure",
         "issue_type": "Database Failure",
         "pattern": re.compile(
-            r"database.*timeout|connection.*refused|db.*error|too many connections|pg.*error|mysql.*error",
+            r"database.*timeout|connection.*refused|db.*error|too many connections|pg.*error|mysql.*error|deadlock|pool.*max",
             re.IGNORECASE,
         ),
         "severity": "HIGH",
         "pattern_label": "DB connection exhaustion / timeout loop",
+        "priority": 10,   # higher = checked first, wins ties
     },
     {
         "id": "high_latency",
         "issue_type": "High Latency",
         "pattern": re.compile(
-            r"slow response|latency|response time.*\d{4,}ms|took \d{4,}ms|threshold.*exceeded",
+            r"slow response|latency|response time.*\d{4,}ms|took \d{4,}ms|threshold.*exceeded|p99|sla.*breach|\d{4,}ms",
             re.IGNORECASE,
         ),
         "severity": "MEDIUM",
         "pattern_label": "Response time exceeding SLA threshold",
+        "priority": 8,
     },
     {
-        "id": "request_failure",
-        "issue_type": "Repeated Request Failure",
+        "id": "auth_failure",
+        "issue_type": "Auth Failure",
         "pattern": re.compile(
-            r"\[ERROR\]|5\d{2} error|service.*unavailable|gateway.*timeout|failed to process|unhandled exception",
+            r"auth.*fail|unauthorized|403|401|invalid.*token|jwt.*expired|session.*revoked|forced.*logout",
             re.IGNORECASE,
         ),
-        "severity": "HIGH",
-        "pattern_label": "Cascading request failures across endpoints",
+        "severity": "MEDIUM",
+        "pattern_label": "Repeated authentication rejections",
+        "priority": 7,
     },
     {
         "id": "memory_pressure",
@@ -53,16 +56,18 @@ RULES = [
         ),
         "severity": "MEDIUM",
         "pattern_label": "Heap growth without GC reclamation",
+        "priority": 6,
     },
     {
-        "id": "auth_failure",
-        "issue_type": "Auth Failure",
+        "id": "request_failure",
+        "issue_type": "Repeated Request Failure",
         "pattern": re.compile(
-            r"auth.*fail|unauthorized|403|401|invalid.*token|jwt.*expired",
+            r"5\d{2} error|service.*unavailable|gateway.*timeout|failed to process|unhandled exception|circuit breaker|nullpointer",
             re.IGNORECASE,
         ),
-        "severity": "LOW",
-        "pattern_label": "Repeated authentication rejections",
+        "severity": "HIGH",
+        "pattern_label": "Cascading request failures across endpoints",
+        "priority": 5,   # lowest — only wins when nothing more specific matches
     },
 ]
 
@@ -83,19 +88,24 @@ def analyze_logs(logs: list[str]) -> dict:
             continue
 
         detected.append({
-            "id":         rule["id"],
-            "issue_type": rule["issue_type"],
-            "severity":   rule["severity"],
-            "pattern":    rule["pattern_label"],
-            "errors":     hits[:5],          # up to 5 sample lines
+            "id":          rule["id"],
+            "issue_type":  rule["issue_type"],
+            "severity":    rule["severity"],
+            "pattern":     rule["pattern_label"],
+            "priority":    rule["priority"],
+            "errors":      hits[:5],
             "occurrences": len(hits),
         })
 
-    # Sort: highest severity first, then by occurrence count
+    # Sort: highest severity first, then by priority, then occurrences
     detected.sort(
-        key=lambda x: (_SEVERITY_RANK[x["severity"]], x["occurrences"]),
+        key=lambda x: (_SEVERITY_RANK[x["severity"]], x["priority"], x["occurrences"]),
         reverse=True,
     )
+
+    # Strip internal priority field before returning
+    for d in detected:
+        d.pop("priority", None)
 
     # Log-level counts
     error_count = sum(1 for l in logs if "[ERROR]" in l)
@@ -118,19 +128,17 @@ def analyze_logs(logs: list[str]) -> dict:
 
 def build_prompt(incident: dict) -> str:
     """
-    Ready-to-send LLM prompt. Swap simulate_ai_response() with a real API
-    call (OpenAI, Anthropic, etc.) using this string as the user message.
+    Structured prompt for the LLM. The system message enforces JSON output;
+    this user message provides the incident context.
     """
     samples = "\n".join(incident["errors"])
     return (
-        f"You are a senior DevOps / SRE engineer performing incident triage.\n\n"
         f"Incident Type : {incident['issue_type']}\n"
         f"Severity      : {incident['severity']}\n"
         f"Pattern       : {incident['pattern']}\n"
         f"Occurrences   : {incident['occurrences']}\n\n"
         f"Sample log lines:\n{samples}\n\n"
-        f"Respond concisely with:\n"
-        f"Root Cause:\nExplanation:\nSuggested Fix:\nConfidence:\n"
+        f"Return the JSON object only."
     )
 
 
