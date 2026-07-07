@@ -13,6 +13,7 @@ import json
 import time
 import random
 import datetime
+HISTORY_FILE = "incident_history.json"
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
@@ -113,6 +114,16 @@ def llm_to_ai_response(llm: dict) -> dict:
         "impact":        llm["impact"],
         "source":        "grok",
     }
+def load_history():
+    if not os.path.exists(HISTORY_FILE):
+        return []
+    with open(HISTORY_FILE, "r") as f:
+        return json.load(f)
+
+
+def save_history(history):
+    with open(HISTORY_FILE, "w") as f:
+        json.dump(history, f, indent=2)
 
 
 # ---------------------------------------------------------------------------
